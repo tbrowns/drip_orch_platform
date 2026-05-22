@@ -24,9 +24,9 @@ _, session_factory = init_db(DATABASE_URL)
 
 class UserCreate(BaseModel):
     full_name: str
+    username: str
     email: EmailStr
     password: str
-    id_number: str
 
 
 class UserLogin(BaseModel):
@@ -37,8 +37,9 @@ class UserLogin(BaseModel):
 class UserResponse(BaseModel):
     id: int
     full_name: str
+    username: str
     email: str
-    id_number: str
+    
 
     class Config:
         from_attributes = True
@@ -96,9 +97,10 @@ def signup(user: UserCreate):
 
         new_user = User(
             full_name=user.full_name,
+            username=user.username,
             email=user.email,
             password_hash=hash_password(user.password),
-            id_number=user.id_number
+            
         )
 
         session.add(new_user)
@@ -111,7 +113,7 @@ def signup(user: UserCreate):
                 "id": new_user.id,
                 "full_name": new_user.full_name,
                 "email": new_user.email,
-                "id_number": new_user.id_number
+                "username": new_user.username
             }
         }
 
