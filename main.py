@@ -2,6 +2,10 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 
 import os
+import threading
+import time
+import logging
+import schedule
 from dotenv import load_dotenv
 
 from db.models import init_db, StockQuote, User, UserKYC
@@ -12,6 +16,7 @@ from core.security import (
     verify_password,
     oauth2_scheme,
 )
+from rapid_stock_quote import APIStockQuote
 
 app = FastAPI()
 
@@ -20,6 +25,56 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 _, session_factory = init_db(DATABASE_URL)
+
+# ─── Logger ──────────────────────────────────────────────────────────────────
+
+logger = logging.getLogger("stock_quote_scheduler")
+
+# ─── Background Scheduler ────────────────────────────────────────────────────
+
+scheduler_thread = None
+scheduler_running = False
+RAPID_API_KEY = os.getenv("RAPID_API_KEY")
+
+
+def scheduler_worker():
+    """Background worker that runs scheduled tasks."""
+    global scheduler_running
+    logger.info("Stock quote scheduler started")
+    
+    while scheduler_running:
+        schedule.run_pending()
+        time.sleep(1)
+
+
+def start_scheduler():
+    """Start the background scheduler."""
+    global scheduler_thread, scheduler_running
+    
+    if scheduler_running:
+        logger.warning("Scheduler already running")
+        return
+    
+    scheduler_running = True
+    
+    # Schedule APIStockQuote to run every 10 minutes
+    scraper = APIStockQuote(api_key=RAPID_API_KEY, session_factory=session_factory, logger=logger)
+    schedule.every(10).minutes.do(scraper.run)
+    logger.info("Scheduled APIStockQuote to run every 10 minutes")
+    
+    # Start scheduler in background thread
+    scheduler_thread = threading.Thread(target=scheduler_worker, daemon=True)
+    scheduler_thread.start()
+
+
+def stop_scheduler():
+    """Stop the background scheduler."""
+    global scheduler_running
+    scheduler_running = False
+    if scheduler_thread:
+        scheduler_thread.join(timeout=5)
+    schedule.clear()
+    logger.info("Stock quote scheduler stopped")
 
 
 class UserCreate(BaseModel):
@@ -83,24 +138,12 @@ def signup(user: UserCreate):
                 detail="Email already registered"
             )
 
-        existing_id = (
-            session.query(User)
-            .filter(User.id_number == user.id_number)
-            .first()
-        )
-
-        if existing_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="ID number already registered"
-            )
-
         new_user = User(
             full_name=user.full_name,
             username=user.username,
             email=user.email,
             password_hash=hash_password(user.password),
-            
+            username=user.username
         )
 
         session.add(new_user)
@@ -208,3 +251,17 @@ def get_all_quotes():
     with session_factory() as session:
         quotes = session.query(StockQuote).all()
         return {"All Quotes": quotes}
+
+
+# ─── Startup and Shutdown Events ─────────────────────────────────────────────
+
+@app.on_event("startup")
+async def startup_event():
+    """Start the background scheduler when the server starts."""
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop the background scheduler when the server stops."""
+    stop_scheduler()
