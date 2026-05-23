@@ -87,11 +87,16 @@ class APIStockQuote:
         value = value.replace(",", "")
         value = value.replace("%", "")
         value = value.replace("+", "")
+
+        if value[0] in ("-", "+"):
+            sign = -1 if value[0] == "-" else 1
+            value = value[1:]
         
         if value == "":
             return None
         
-        return float(value)
+        
+        return float(value) * sign if 'sign' in locals() else float(value)
     
     @staticmethod
     def to_int(value):
@@ -115,9 +120,9 @@ class APIStockQuote:
                 if existing:
                     existing.name = q.get("name")
                     existing.price = self.to_float(q.get("price"))
-                    existing.change_pct = q.get("change")
+                    existing.change_pct = self.to_float(q.get("change"))
                     existing.volume = self.to_int(q.get("volume"))
-                    existing.scraped_at = datetime.utcnow()
+                    existing.scraped_at = datetime.now(UTC)
                 
                 else:
                     row = StockQuote(

@@ -143,7 +143,6 @@ def signup(user: UserCreate):
             username=user.username,
             email=user.email,
             password_hash=hash_password(user.password),
-            username=user.username
         )
 
         session.add(new_user)
