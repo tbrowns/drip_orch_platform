@@ -18,3 +18,5 @@ python-jose[cryptography]
 python-multipart
 requests
 dotenv
+tenacity
+bs4
