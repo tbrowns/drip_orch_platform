@@ -31,14 +31,14 @@ class User(Base):
 
     created_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.datetime.now(UTC),
+        default=lambda: datetime.now(UTC),
         nullable=False
     )
 
     updated_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.datetime.now(UTC),
-        onupdate=lambda: datetime.datetime.now(UTC),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         nullable=False
     )
 
@@ -83,14 +83,14 @@ class UserKYC(Base):
 
     created_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.datetime.now(UTC),
+        default=lambda: datetime.now(UTC),
         nullable=False
     )
 
     updated_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.datetime.now(UTC),
-        onupdate=lambda: datetime.datetime.now(UTC),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         nullable=False
     )
 
@@ -128,7 +128,7 @@ class PaymentMethod(Base):
 
     created_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.datetime.now(UTC),
+        default=lambda: datetime.now(UTC),
         nullable=False
     )
 
@@ -157,7 +157,7 @@ class CDSAccount(Base):
 
     created_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.datetime.now(UTC),
+        default=lambda: datetime.now(UTC),
         nullable=False
     )
 
@@ -184,7 +184,7 @@ class UserPortfolio(Base):
 
     created_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.datetime.now(UTC),
+        default=lambda: datetime.now(UTC),
         nullable=False
     )
 
@@ -217,14 +217,14 @@ class PortfolioHolding(Base):
 
     created_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.datetime.now(UTC),
+        default=lambda: datetime.now(UTC),
         nullable=False
     )
 
     updated_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.datetime.now(UTC),
-        onupdate=lambda: datetime.datetime.now(UTC),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         nullable=False
     )
 
@@ -242,40 +242,56 @@ class PortfolioHolding(Base):
 class StockQuote(Base):
     """
     One row per scrape per ticker.
-    Stores the real-time snapshot from mystocks.
+    Stores the most recent scraped stock quote from mystocks.
     """
     __tablename__ = "stock_quotes"
 
     id             = Column(Integer, primary_key=True, autoincrement=True)
     ticker         = Column(String(20), unique=True, nullable=False, index=True)
-    name           = Column(String(120))
-
-    # Price data
-    price          = Column(Float)           # Last traded price (KES)
-    change         = Column(Float)           # Absolute change
-    change_pct     = Column(Float)           # % change
-    open_price     = Column(Float)
-    high           = Column(Float)
-    low            = Column(Float)
-    volume         = Column(Integer)
-    previous_close = Column(Float)
-
-    # Dividend / DRIP relevant fields
-    eps            = Column(Float)           # Earnings per share
-    pe_ratio       = Column(Float)
-    dividend       = Column(Float)           # Last declared dividend (KES)
-    dividend_yield = Column(Float)           # Yield %
-    book_value     = Column(Float)
-
-    # Market info
-    market_cap     = Column(Float)
-    shares_issued  = Column(Float)
-    sector         = Column(String(120))
-
-    scraped_at     = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    name           = Column(String(120), nullable=True)
+    sector         = Column(String(80), nullable=True)
+    previous       = Column(String(64), nullable=True)
+    open           = Column(String(64), nullable=True)
+    average        = Column(String(64), nullable=True)
+    deals          = Column(String(64), nullable=True)
+    volume         = Column(String(64), nullable=True)
+    turnover       = Column(String(64), nullable=True)
+    day_range      = Column(String(64), nullable=True)
+    week_52_range  = Column(String(64), nullable=True)
+    average_volume = Column(String(64), nullable=True)
+    beta           = Column(String(64), nullable=True)
+    shares_issued  = Column(String(64), nullable=True)
+    year_end       = Column(String(64), nullable=True)
+    par_value      = Column(String(64), nullable=True)
+    profile        = Column(Text, nullable=True)
+    error          = Column(String(255), nullable=True)
+    scraped_at     = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False, index=True)
 
     def __repr__(self):
-        return f"<StockQuote {self.ticker} @ {self.price} ({self.scraped_at:%Y-%m-%d %H:%M})>"
+        return f"<StockQuote {self.ticker} scraped_at={self.scraped_at:%Y-%m-%d %H:%M}>"
+
+
+class Announcement(Base):
+    """
+    Corporate announcements scraped from the calendar page.
+    """
+    __tablename__ = "announcements"
+    __table_args__ = (
+        UniqueConstraint("date", "ticker", "description", name="uq_announcement_unique"),
+    )
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    date           = Column(String(50), nullable=False, index=True)
+    ticker         = Column(String(20), nullable=False, index=True)
+    company        = Column(String(120), nullable=True)
+    event_type     = Column(String(80), nullable=True)
+    amount_kes     = Column(String(50), nullable=True)
+    dividend_type  = Column(String(50), nullable=True)
+    description    = Column(Text, nullable=True)
+    scraped_at     = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+
+    def __repr__(self):
+        return f"<Announcement {self.ticker} {self.date} {self.event_type}>"
 
 
 class DividendEvent(Base):
@@ -294,7 +310,7 @@ class DividendEvent(Base):
     ex_date        = Column(Date)
     pay_date       = Column(Date)
     announcement   = Column(Text)
-    scraped_at     = Column(DateTime, default=datetime.utcnow)
+    scraped_at     = Column(DateTime, default=lambda: datetime.now(UTC))
 
     def __repr__(self):
         return f"<DividendEvent {self.ticker} KES {self.dividend_amt} ex={self.ex_date}>"
@@ -320,7 +336,7 @@ class DRIPSummary(Base):
     reinvest_shares  = Column(Float)                     # total_dividend / price
     leftover_cash    = Column(Float)                     # remainder after whole shares
     annual_yield_pct = Column(Float)
-    computed_date    = Column(DateTime, default=datetime.utcnow, index=True)
+    computed_date    = Column(DateTime, default=lambda: datetime.now(UTC), index=True)
 
     def __repr__(self):
         return f"<DRIPSummary {self.ticker} +{self.reinvest_shares:.4f} shares>"

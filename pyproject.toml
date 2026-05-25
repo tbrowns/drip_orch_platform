@@ -1,0 +1,24 @@
+[project]
+name = "Drip-orchestration"
+version = "0.1.0"
+description = "A simple FastAPI tutorial for deploying to FastAPI"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi[standard]>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy>=2.0.0",
+    "asyncpg",
+    "python-dotenv",
+    "pydantic",
+    "pydantic-settings",
+    "beautifulsoup4==4.12.3",
+    "lxml",
+    "schedule",
+    "psycopg2-binary>=2.9.0",
+    "groq",
+    "passlib[bcrypt]",
+    "python-jose[cryptography]",
+    "python-multipart",
+    "requests",
+    "tenacity",
+]

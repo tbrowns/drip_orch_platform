@@ -1,14 +1,14 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 
-import os
+import os, signal
 import threading
 import time
 import logging
 import schedule
 from dotenv import load_dotenv
 
-from db.models import init_db, StockQuote, User, UserKYC
+from db.models import init_db, StockQuote, Announcement, User, UserKYC
 from core.security import (
     create_access_token,
     verify_token,
@@ -16,13 +16,16 @@ from core.security import (
     verify_password,
     oauth2_scheme,
 )
-from rapid_stock_quote import APIStockQuote
+from nse_scraper import NSEDatabaseScraper
 
 app = FastAPI()
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is missing from environment variables")
 
 _, session_factory = init_db(DATABASE_URL)
 
@@ -37,13 +40,23 @@ scheduler_running = False
 RAPID_API_KEY = os.getenv("RAPID_API_KEY")
 
 
+def _run_scraper_job(scraper: NSEDatabaseScraper) -> None:
+    try:
+        scraper.run_once()
+    except Exception:
+        logger.exception("Scheduled NSEDatabaseScraper run failed")
+
+
 def scheduler_worker():
     """Background worker that runs scheduled tasks."""
     global scheduler_running
     logger.info("Stock quote scheduler started")
     
     while scheduler_running:
-        schedule.run_pending()
+        try:
+            schedule.run_pending()
+        except Exception:
+            logger.exception("Error while running scheduled tasks")
         time.sleep(1)
 
 
@@ -57,10 +70,12 @@ def start_scheduler():
     
     scheduler_running = True
     
-    # Schedule APIStockQuote to run every 10 minutes
-    scraper = APIStockQuote(api_key=RAPID_API_KEY, session_factory=session_factory, logger=logger)
-    schedule.every(10).minutes.do(scraper.run)
-    logger.info("Scheduled APIStockQuote to run every 10 minutes")
+    scraper = NSEDatabaseScraper(session_factory=session_factory, logger=logger)
+    schedule.every(2).minutes.do(lambda: _run_scraper_job(scraper))
+    logger.info("Scheduled NSEDatabaseScraper to run every 2 minutes")
+
+    logger.info("Running initial NSEDatabaseScraper scrape on startup")
+    _run_scraper_job(scraper)
     
     # Start scheduler in background thread
     scheduler_thread = threading.Thread(target=scheduler_worker, daemon=True)
@@ -228,29 +243,64 @@ def get_quotes_from_db():
         quotes = session.query(
             StockQuote.ticker,
             StockQuote.name,
-            StockQuote.price,
-            StockQuote.change_pct,
-            StockQuote.volume
+            StockQuote.sector,
+            StockQuote.previous,
+            StockQuote.open,
+            StockQuote.volume,
+            StockQuote.turnover,
+            StockQuote.scraped_at,
         ).all()
         return {
             "Quotes": [
                 {
                     "ticker": q[0],
                     "name": q[1],
-                    "price": q[2],
-                    "change_pct": q[3],
-                    "volume": q[4]
+                    "sector": q[2],
+                    "previous": q[3],
+                    "open": q[4],
+                    "volume": q[5],
+                    "turnover": q[6],
+                    "scraped_at": q[7].isoformat() if q[7] else None,
                 }
                 for q in quotes
             ]
         }
 
-@app.get("/all-quotes")
+def _serialize_stock_quote(quote: StockQuote) -> dict:
+    return {
+        "ticker": quote.ticker,
+        "name": quote.name,
+        "sector": quote.sector,
+        "previous": quote.previous,
+        "open": quote.open,
+        "average": quote.average,
+        "deals": quote.deals,
+        "volume": quote.volume,
+        "turnover": quote.turnover,
+        "day_range": quote.day_range,
+        "week_52_range": quote.week_52_range,
+        "average_volume": quote.average_volume,
+        "beta": quote.beta,
+        "shares_issued": quote.shares_issued,
+        "year_end": quote.year_end,
+        "par_value": quote.par_value,
+        "profile": quote.profile,
+        "error": quote.error,
+        "scraped_at": quote.scraped_at.isoformat() if quote.scraped_at else None,
+    }
+
+
+@app.get("/detailed-quotes")
 def get_all_quotes():
     with session_factory() as session:
         quotes = session.query(StockQuote).all()
-        return {"All Quotes": quotes}
+        return {"All Quotes": [_serialize_stock_quote(q) for q in quotes]}
 
+
+@app.get("/shutdown")
+async def shutdown():
+    os.kill(os.getpid(), signal.SIGTERM)
+    return {"message": "Shutting down..."}
 
 # ─── Startup and Shutdown Events ─────────────────────────────────────────────
 
