@@ -8,7 +8,11 @@ import logging
 import schedule
 from dotenv import load_dotenv
 
-from db.models import init_db, StockQuote, Announcement, User, UserKYC
+from db.models import (
+    init_db, StockQuote, Announcement, User, UserKYC, 
+    UserPortfolio, PortfolioHolding, PaymentMethod, CDSAccount
+)
+from datetime import datetime
 from core.security import (
     create_access_token,
     verify_token,
@@ -71,8 +75,8 @@ def start_scheduler():
     scheduler_running = True
     
     scraper = NSEDatabaseScraper(session_factory=session_factory, logger=logger)
-    schedule.every(2).minutes.do(lambda: _run_scraper_job(scraper))
-    logger.info("Scheduled NSEDatabaseScraper to run every 2 minutes")
+    schedule.every(10).minutes.do(lambda: _run_scraper_job(scraper))
+    logger.info("Scheduled NSEDatabaseScraper to run every 10 minutes")
 
     logger.info("Running initial NSEDatabaseScraper scrape on startup")
     _run_scraper_job(scraper)
@@ -115,6 +119,88 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+class PortfolioHoldingResponse(BaseModel):
+    id: int
+    ticker: str
+    shares_owned: float
+    average_buy_price: float
+    total_invested: float
+    created_at: str
+    updated_at: str
+
+    class Config:
+        from_attributes = True
+
+
+class UserPortfolioResponse(BaseModel):
+    id: int
+    user_id: int
+    name: str
+    cash_balance: float
+    created_at: str
+    holdings: list[PortfolioHoldingResponse]
+
+    class Config:
+        from_attributes = True
+
+
+class PaymentMethodResponse(BaseModel):
+    id: int
+    method_type: str
+    phone_number: str | None = None
+    bank_name: str | None = None
+    account_number: str | None = None
+    account_name: str | None = None
+    is_default: bool
+    is_verified: bool
+    created_at: str
+
+    class Config:
+        from_attributes = True
+
+
+class CDSAccountResponse(BaseModel):
+    id: int
+    cds_number: str
+    status: str
+    created_at: str
+
+    class Config:
+        from_attributes = True
+
+class UserKYCResponse(BaseModel):
+    id: int
+    user_id: int
+    id_number: str
+    kra_pin: str | None = None
+    phone_number: str | None = None
+    date_of_birth: str | None = None
+    nationality: str
+    county: str | None = None
+    address: str | None = None
+    verification_status: str
+    created_at: str
+    updated_at: str
+
+    class Config:
+        from_attributes = True
+
+class UserDetailResponse(BaseModel):
+    id: int
+    full_name: str
+    username: str
+    email: str
+    created_at: str
+    updated_at: str
+    kyc: UserKYCResponse | None = None
+    payment_methods: list[PaymentMethodResponse] = []
+    cds_accounts: list[CDSAccountResponse] = []
+    portfolios: list[UserPortfolioResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
 def get_current_user(token: str = Depends(oauth2_scheme)):
     token_data = verify_token(token)
 
@@ -130,9 +216,12 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found"
             )
+        
+        portfolio = (session.query(UserPortfolio).filter(UserPortfolio.user_id == user.id).first())
+        if portfolio:
+            user.portfolio = portfolio
 
         return user
-
 
 @app.get("/")
 def read_root():
@@ -164,14 +253,14 @@ def signup(user: UserCreate):
         session.commit()
         session.refresh(new_user)
 
+        access_token = create_access_token(
+            data={"user_id": new_user.id}
+        )
+
         return {
             "message": "User signed up successfully",
-            "user": {
-                "id": new_user.id,
-                "full_name": new_user.full_name,
-                "email": new_user.email,
-                "username": new_user.username
-            }
+            "access_token": access_token,
+            "token_type": "bearer"
         }
 
 @app.post("/auth/login")
@@ -210,9 +299,126 @@ def login(user: UserLogin):
             "token_type": "bearer"
         }
 
-@app.get("/users/me")
+@app.get("/users/me", response_model=UserDetailResponse)
 def read_me(current_user: User = Depends(get_current_user)):
-    return current_user
+    """
+    Get the current authenticated user with all related data:
+    - KYC information
+    - Payment methods
+    - CDS accounts
+    - Portfolios with holdings
+    """
+    with session_factory() as session:
+        user = (
+            session.query(User)
+            .filter(User.id == current_user.id)
+            .first()
+        )
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Get all portfolios with their holdings
+        portfolios = session.query(UserPortfolio).filter(
+            UserPortfolio.user_id == user.id
+        ).all()
+
+        # Serialize portfolios with holdings
+        portfolio_responses = []
+        for portfolio in portfolios:
+            holdings = session.query(PortfolioHolding).filter(
+                PortfolioHolding.portfolio_id == portfolio.id
+            ).all()
+            
+            portfolio_responses.append(
+                UserPortfolioResponse(
+                    id=portfolio.id,
+                    user_id=portfolio.user_id,
+                    name=portfolio.name,
+                    cash_balance=float(portfolio.cash_balance),
+                    created_at=portfolio.created_at.isoformat(),
+                    holdings=[
+                        PortfolioHoldingResponse(
+                            id=h.id,
+                            ticker=h.ticker,
+                            shares_owned=float(h.shares_owned),
+                            average_buy_price=float(h.average_buy_price),
+                            total_invested=float(h.total_invested),
+                            created_at=h.created_at.isoformat(),
+                            updated_at=h.updated_at.isoformat()
+                        )
+                        for h in holdings
+                    ]
+                )
+            )
+
+        # Get KYC information
+        kyc = session.query(UserKYC).filter(UserKYC.user_id == user.id).first()
+        kyc_response = None
+        if kyc:
+            kyc_response = UserKYCResponse(
+                id=kyc.id,
+                user_id=kyc.user_id,
+                id_number=kyc.id_number,
+                kra_pin=kyc.kra_pin,
+                phone_number=kyc.phone_number,
+                date_of_birth=kyc.date_of_birth.isoformat() if kyc.date_of_birth else None,
+                nationality=kyc.nationality,
+                county=kyc.county,
+                address=kyc.address,
+                verification_status=kyc.verification_status,
+                created_at=kyc.created_at.isoformat(),
+                updated_at=kyc.updated_at.isoformat()
+            )
+
+        # Get payment methods
+        payment_methods = session.query(PaymentMethod).filter(
+            PaymentMethod.user_id == user.id
+        ).all()
+        payment_responses = [
+            PaymentMethodResponse(
+                id=pm.id,
+                method_type=pm.method_type,
+                phone_number=pm.phone_number,
+                bank_name=pm.bank_name,
+                account_number=pm.account_number,
+                account_name=pm.account_name,
+                is_default=pm.is_default,
+                is_verified=pm.is_verified,
+                created_at=pm.created_at.isoformat()
+            )
+            for pm in payment_methods
+        ]
+
+        # Get CDS accounts
+        cds_accounts = session.query(CDSAccount).filter(
+            CDSAccount.user_id == user.id
+        ).all()
+        cds_responses = [
+            CDSAccountResponse(
+                id=cds.id,
+                cds_number=cds.cds_number,
+                status=cds.status,
+                created_at=cds.created_at.isoformat()
+            )
+            for cds in cds_accounts
+        ]
+
+        return UserDetailResponse(
+            id=user.id,
+            full_name=user.full_name,
+            username=user.username,
+            email=user.email,
+            created_at=user.created_at.isoformat(),
+            updated_at=user.updated_at.isoformat(),
+            kyc=kyc_response,
+            payment_methods=payment_responses,
+            cds_accounts=cds_responses,
+            portfolios=portfolio_responses
+        )
 
 @app.get("/kyc/me")
 def get_current_kyc(current_user: User = Depends(get_current_user)):
@@ -248,7 +454,6 @@ def get_quotes_from_db():
             StockQuote.open,
             StockQuote.volume,
             StockQuote.turnover,
-            StockQuote.scraped_at,
         ).all()
         return {
             "Quotes": [
@@ -260,9 +465,9 @@ def get_quotes_from_db():
                     "open": q[4],
                     "volume": q[5],
                     "turnover": q[6],
-                    "scraped_at": q[7].isoformat() if q[7] else None,
+                    "change_pct": ((q[4] - q[3]) / q[3] * 100) if q[3] else None
                 }
-                for q in quotes
+            for q in quotes
             ]
         }
 
@@ -274,6 +479,8 @@ def _serialize_stock_quote(quote: StockQuote) -> dict:
         "previous": quote.previous,
         "open": quote.open,
         "average": quote.average,
+        "change": (quote.open - quote.previous) if quote.previous else None,
+        "change_pct": ((quote.open - quote.previous) / quote.previous * 100) if quote.previous else None,
         "deals": quote.deals,
         "volume": quote.volume,
         "turnover": quote.turnover,
@@ -289,13 +496,40 @@ def _serialize_stock_quote(quote: StockQuote) -> dict:
         "scraped_at": quote.scraped_at.isoformat() if quote.scraped_at else None,
     }
 
-
 @app.get("/detailed-quotes")
 def get_all_quotes():
     with session_factory() as session:
         quotes = session.query(StockQuote).all()
         return {"All Quotes": [_serialize_stock_quote(q) for q in quotes]}
 
+
+@app.get("/dividends/upcoming")
+def get_dividends_from_db():
+    with session_factory() as session:
+        dividends = session.query(
+            Announcement.ticker,
+            Announcement.company,
+            Announcement.dividend,
+            Announcement.date,
+            Announcement.amount_kes,
+            Announcement.event_type,
+            Announcement.description,
+        
+        ).filter(Announcement.date >= datetime.now().date()).all()
+        return {
+            "Dividends": [
+                {
+                    "ticker": d[0],
+                    "company": d[1],
+                    "dividend": d[2],
+                    "date": d[3].isoformat() if d[3] else None,
+                    "amount_kes": d[4],
+                    "event_type": d[5],
+                    "description": d[6],
+                }
+                for d in dividends
+            ]
+        }
 
 @app.get("/shutdown")
 async def shutdown():
@@ -308,7 +542,6 @@ async def shutdown():
 async def startup_event():
     """Start the background scheduler when the server starts."""
     start_scheduler()
-
 
 @app.on_event("shutdown")
 async def shutdown_event():

@@ -289,6 +289,16 @@ class NSEDatabaseScraper:
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self.scraper = NSEScraper(delay=self.delay, logger=self.logger)
 
+    @staticmethod
+    def _safe_float(value: Optional[str]) -> Optional[float]:
+        """Safely convert a string to float, returning None if conversion fails."""
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
     def run(self) -> tuple[list[StockQuote], list[AnnouncementData]]:
         stocks = self.scraper.get_stocks(self.tickers)
         announcements = self.scraper.get_announcements()
@@ -310,9 +320,9 @@ class NSEDatabaseScraper:
 
                 row.name = stock.name
                 row.sector = stock.sector
-                row.previous = stock.previous
-                row.open = stock.open
-                row.average = stock.average
+                row.previous = self._safe_float(stock.previous)
+                row.open = self._safe_float(stock.open)
+                row.average = self._safe_float(stock.average)
                 row.deals = stock.deals
                 row.volume = stock.volume
                 row.turnover = stock.turnover

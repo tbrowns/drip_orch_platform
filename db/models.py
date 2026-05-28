@@ -250,9 +250,9 @@ class StockQuote(Base):
     ticker         = Column(String(20), unique=True, nullable=False, index=True)
     name           = Column(String(120), nullable=True)
     sector         = Column(String(80), nullable=True)
-    previous       = Column(String(64), nullable=True)
-    open           = Column(String(64), nullable=True)
-    average        = Column(String(64), nullable=True)
+    previous       = Column(Float, nullable=True)
+    open           = Column(Float, nullable=True)
+    average        = Column(Float, nullable=True)
     deals          = Column(String(64), nullable=True)
     volume         = Column(String(64), nullable=True)
     turnover       = Column(String(64), nullable=True)
@@ -275,9 +275,9 @@ class Announcement(Base):
     """
     Corporate announcements scraped from the calendar page.
     """
-    __tablename__ = "announcements"
+    __tablename__ = "dividend_announcements"
     __table_args__ = (
-        UniqueConstraint("date", "ticker", "description", name="uq_announcement_unique"),
+        UniqueConstraint("date", "ticker", "description", name="uq_dividend_announcements_unique"),
     )
 
     id             = Column(Integer, primary_key=True, autoincrement=True)
@@ -292,28 +292,6 @@ class Announcement(Base):
 
     def __repr__(self):
         return f"<Announcement {self.ticker} {self.date} {self.event_type}>"
-
-
-class DividendEvent(Base):
-    """
-    Tracks dividend announcements found on the stock page.
-    Used by the DRIP engine to calculate reinvestment.
-    """
-    __tablename__ = "dividend_events"
-    __table_args__ = (
-        UniqueConstraint("ticker", "ex_date", name="uq_ticker_exdate"),
-    )
-
-    id             = Column(Integer, primary_key=True, autoincrement=True)
-    ticker         = Column(String(20), nullable=False, index=True)
-    dividend_amt   = Column(Float, nullable=False)   # KES per share
-    ex_date        = Column(Date)
-    pay_date       = Column(Date)
-    announcement   = Column(Text)
-    scraped_at     = Column(DateTime, default=lambda: datetime.now(UTC))
-
-    def __repr__(self):
-        return f"<DividendEvent {self.ticker} KES {self.dividend_amt} ex={self.ex_date}>"
 
 
 class DRIPSummary(Base):
