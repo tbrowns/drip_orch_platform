@@ -465,7 +465,7 @@ def get_quotes_from_db():
                     "open": q[4],
                     "volume": q[5],
                     "turnover": q[6],
-                    "change_pct": ((q[4] - q[3]) / q[3] * 100) if q[3] else None
+                    
                 }
             for q in quotes
             ]
@@ -479,8 +479,6 @@ def _serialize_stock_quote(quote: StockQuote) -> dict:
         "previous": quote.previous,
         "open": quote.open,
         "average": quote.average,
-        "change": (quote.open - quote.previous) if quote.previous else None,
-        "change_pct": ((quote.open - quote.previous) / quote.previous * 100) if quote.previous else None,
         "deals": quote.deals,
         "volume": quote.volume,
         "turnover": quote.turnover,
