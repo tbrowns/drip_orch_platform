@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, UTC
 
 from dotenv import load_dotenv
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from fastapi import HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordBearer
 
@@ -18,7 +18,23 @@ if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY is missing from environment variables")
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt is used directly rather than through passlib's CryptContext.
+# passlib 1.7.4 probes its bcrypt backend on first use with a 255-byte test
+# secret; bcrypt >= 4.1 raises ValueError on secrets over 72 bytes instead of
+# truncating, so the backend never initialises and every hash call blows up.
+# Calling bcrypt directly produces the exact same $2b$ hashes, so existing
+# passlib-generated hashes keep verifying.
+BCRYPT_MAX_BYTES = 72
+
+
+def _to_bcrypt_bytes(password: str) -> bytes:
+    """
+    Encode a password for bcrypt, which hashes at most 72 bytes and rejects
+    anything longer. Truncation is on bytes, not characters, which is what
+    bcrypt itself operates on.
+    """
+    return password.encode("utf-8")[:BCRYPT_MAX_BYTES]
+
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -27,14 +43,22 @@ def hash_password(password: str) -> str:
     """
     Hash plain password before saving to database.
     """
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(_to_bcrypt_bytes(password), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     Compare plain password from login with hashed password in DB.
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return bcrypt.checkpw(
+            _to_bcrypt_bytes(plain_password),
+            hashed_password.encode("utf-8"),
+        )
+    except (ValueError, TypeError):
+        # Malformed or non-bcrypt hash in the column -- treat as a failed login
+        # rather than a 500.
+        return False
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:

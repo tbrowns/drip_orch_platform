@@ -13,7 +13,7 @@ psycopg2-binary
 
 groq
 
-passlib[bcrypt] 
+bcrypt
 python-jose[cryptography]
 python-multipart
 requests

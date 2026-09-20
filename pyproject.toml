@@ -16,7 +16,7 @@ dependencies = [
     "schedule",
     "psycopg2-binary>=2.9.0",
     "groq",
-    "passlib[bcrypt]",
+    "bcrypt",
     "python-jose[cryptography]",
     "python-multipart",
     "requests",
