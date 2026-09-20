@@ -66,6 +66,24 @@ scheduler_running = False
 RAPID_API_KEY = os.getenv("RAPID_API_KEY")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Read a boolean env var. Accepts 1/true/yes/on, any case."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Starting the app normally scrapes live.mystocks.co.ke immediately and then
+# every SCRAPE_INTERVAL_MINUTES. That is right in production and wrong almost
+# everywhere else: it blocks startup on a third party being up, hits their
+# site on every local run and every test, and rewrites stock_quotes underneath
+# whatever you were about to measure. SKIP_SCRAPE=true turns the whole thing
+# off. Default is unchanged, so production behaves exactly as before.
+SKIP_SCRAPE = _env_flag("SKIP_SCRAPE", default=False)
+SCRAPE_INTERVAL_MINUTES = max(1, int(os.getenv("SCRAPE_INTERVAL_MINUTES", "10")))
+
+
 def _run_scraper_job(scraper: NSEDatabaseScraper) -> None:
     try:
         scraper.run_once()
@@ -89,7 +107,14 @@ def scheduler_worker():
 def start_scheduler():
     """Start the background scheduler."""
     global scheduler_thread, scheduler_running
-    
+
+    if SKIP_SCRAPE:
+        logger.info(
+            "SKIP_SCRAPE is set - no startup scrape and no scheduler. "
+            "The API serves whatever is already in the database."
+        )
+        return
+
     if scheduler_running:
         logger.warning("Scheduler already running")
         return
@@ -97,8 +122,10 @@ def start_scheduler():
     scheduler_running = True
     
     scraper = NSEDatabaseScraper(session_factory=session_factory, logger=logger)
-    schedule.every(10).minutes.do(lambda: _run_scraper_job(scraper))
-    logger.info("Scheduled NSEDatabaseScraper to run every 10 minutes")
+    schedule.every(SCRAPE_INTERVAL_MINUTES).minutes.do(lambda: _run_scraper_job(scraper))
+    logger.info(
+        "Scheduled NSEDatabaseScraper to run every %d minutes", SCRAPE_INTERVAL_MINUTES
+    )
 
     logger.info("Running initial NSEDatabaseScraper scrape on startup")
     _run_scraper_job(scraper)

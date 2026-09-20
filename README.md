@@ -71,6 +71,8 @@ ALGORITHM=HS256                                              # optional, default
 ACCESS_TOKEN_EXPIRE_MINUTES=60                               # optional, default 60
 GROQ_API_KEY=...                                             # optional, only for scraper/groq_client.py
 RAPID_API_KEY=...                                            # optional, legacy
+SKIP_SCRAPE=false                                            # optional, default false
+SCRAPE_INTERVAL_MINUTES=10                                   # optional, default 10
 ```
 
 `main.py` connects to `DATABASE_URL` and creates the tables at import time,
@@ -78,6 +80,30 @@ and starts the scraper scheduler on startup.
 
 ```bash
 uvicorn main:app --reload        # http://localhost:8000/docs
+```
+
+### Running without scraping
+
+By default, starting the app immediately scrapes `live.mystocks.co.ke` and then
+repeats every `SCRAPE_INTERVAL_MINUTES`. That is what you want in production and
+rarely what you want anywhere else: it blocks startup on a third party being
+reachable, hits their site on every local run and every test, and rewrites
+`stock_quotes` underneath whatever you were about to measure.
+
+```bash
+SKIP_SCRAPE=true uvicorn main:app --reload
+```
+
+No startup scrape, no scheduler thread; the API serves whatever is already in
+the database. Accepts `1`, `true`, `yes` or `on` in any case. Leave it unset in
+production.
+
+To refresh the data deliberately instead, run one scrape and exit:
+
+```python
+from main import session_factory
+from nse_scraper import NSEDatabaseScraper
+NSEDatabaseScraper(session_factory=session_factory).run_once()
 ```
 
 ## The DRIP engine
