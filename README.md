@@ -72,7 +72,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES=60                               # optional, default
 GROQ_API_KEY=...                                             # optional, only for scraper/groq_client.py
 RAPID_API_KEY=...                                            # optional, legacy
 SKIP_SCRAPE=false                                            # optional, default false
-SCRAPE_INTERVAL_MINUTES=10                                   # optional, default 10
+SCRAPE_INTERVAL_MINUTES=60                                   # optional, default 60
 ```
 
 `main.py` connects to `DATABASE_URL` and creates the tables at import time,

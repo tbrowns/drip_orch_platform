@@ -81,7 +81,9 @@ def _env_flag(name: str, default: bool = False) -> bool:
 # whatever you were about to measure. SKIP_SCRAPE=true turns the whole thing
 # off. Default is unchanged, so production behaves exactly as before.
 SKIP_SCRAPE = _env_flag("SKIP_SCRAPE", default=False)
-SCRAPE_INTERVAL_MINUTES = max(1, int(os.getenv("SCRAPE_INTERVAL_MINUTES", "10")))
+# NSE quotes settle once a day, so a 10-minute poll was 60x more traffic than
+# the data justified - and the kind of thing that gets an IP rate-limited.
+SCRAPE_INTERVAL_MINUTES = max(1, int(os.getenv("SCRAPE_INTERVAL_MINUTES", "60")))
 
 
 def _run_scraper_job(scraper: NSEDatabaseScraper) -> None:

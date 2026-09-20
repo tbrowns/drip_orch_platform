@@ -49,7 +49,7 @@ load_dotenv()
 DATABASE_URL        = os.getenv("DATABASE_URL", "sqlite:///mystocks_drip.db")
 WATCH_LIST          = [t.strip().upper() for t in
                        os.getenv("WATCH_LIST", "SCOM,EQTY,KCB,EABL").split(",") if t.strip()]
-INTERVAL_MINUTES    = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "10"))
+INTERVAL_MINUTES    = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "60"))
 TRADING_HOURS_ONLY  = os.getenv("TRADING_HOURS_ONLY", "true").lower() == "true"
 VALIDATE_WITH_GROQ  = os.getenv("VALIDATE_WITH_GROQ", "false").lower() == "true"
 
