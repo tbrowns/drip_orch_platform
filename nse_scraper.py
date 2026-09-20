@@ -5,7 +5,7 @@ Scrapes stock quotes and corporate announcements (dividend calendar) from the Ke
 import logging
 import re
 import time
-from datetime import datetime, UTC
+from datetime import datetime, UTC, date
 from dataclasses import dataclass
 from typing import Optional
 
@@ -15,6 +15,30 @@ from bs4 import BeautifulSoup
 from db.models import StockQuote, Announcement
 
 logger = logging.getLogger(__name__)
+
+
+def parse_announcement_date(date_str: str) -> date:
+    """
+    Parse a date string from NSE announcements (e.g., '29 May 2026').
+    Handles formats like 'DD Mon YYYY' and 'Mon DD, YYYY'.
+    """
+    date_str = date_str.strip()
+    
+    # Try common formats
+    formats = [
+        "%d %B %Y",     # 29 May 2026
+        "%b %d %Y",    # May 29 2026 (abbreviated month)
+        "%d/%m/%Y",     # 29/05/2026
+    ]
+    
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt).date()
+        except ValueError:
+            continue
+    
+    # If no format matched, raise an error with the problematic date
+    raise ValueError(f"Unable to parse date: '{date_str}'. Please check the date format.")
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -345,10 +369,17 @@ class NSEDatabaseScraper:
         saved = 0
         with self.session_factory() as session:
             for announcement in announcements:
+                # Parse the date string to a date object
+                try:
+                    announcement_date = parse_announcement_date(announcement.date)
+                except ValueError as e:
+                    self.logger.warning("Skipping announcement with invalid date: %s", e)
+                    continue
+                
                 existing = (
                     session.query(Announcement)
                     .filter(
-                        Announcement.date == announcement.date,
+                        Announcement.date == announcement_date,
                         Announcement.ticker == announcement.ticker,
                         Announcement.description == announcement.description,
                     )
@@ -358,7 +389,7 @@ class NSEDatabaseScraper:
                     continue
 
                 session.add(Announcement(
-                    date=announcement.date,
+                    date=announcement_date,
                     ticker=announcement.ticker,
                     company=announcement.company,
                     event_type=announcement.event_type,

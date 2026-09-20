@@ -277,11 +277,11 @@ class Announcement(Base):
     """
     __tablename__ = "dividend_announcements"
     __table_args__ = (
-        UniqueConstraint("date", "ticker", "description", name="uq_dividend_announcements_unique"),
+        UniqueConstraint("date", "ticker", "description", name="uq_dividend_announcements"),
     )
 
     id             = Column(Integer, primary_key=True, autoincrement=True)
-    date           = Column(String(50), nullable=False, index=True)
+    date           = Column(Date, nullable=False, index=True)
     ticker         = Column(String(20), nullable=False, index=True)
     company        = Column(String(120), nullable=True)
     event_type     = Column(String(80), nullable=True)

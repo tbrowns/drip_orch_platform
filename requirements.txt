@@ -20,3 +20,6 @@ requests
 dotenv
 tenacity
 bs4
+
+# test
+pytest

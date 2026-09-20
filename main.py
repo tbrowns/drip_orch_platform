@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import Date, cast
 
 import os, signal
 import threading
@@ -21,6 +22,27 @@ from core.security import (
     oauth2_scheme,
 )
 from nse_scraper import NSEDatabaseScraper
+from scraper.drip import (
+    DEFAULT_BROKERAGE_RATE,
+    DEFAULT_MIN_BROKERAGE_KES,
+    RESIDENT_WHT_RATE,
+    project_drip,
+)
+from scraper.models import quote_from_row, dividends_from_rows
+from core.drip_schemas import (
+    MAX_YEARS,
+    PaymentsPerYear,
+    DripAssumptionsIn,
+    DripPortfolioAggregateOut,
+    DripPortfolioPositionOut,
+    DripPortfolioResponse,
+    DripSimulateRequest,
+    DripSimulateResponse,
+    InputResolutionError,
+    SkippedPositionOut,
+    projection_to_response,
+    resolve_market_inputs,
+)
 
 app = FastAPI()
 
@@ -494,6 +516,13 @@ def _serialize_stock_quote(quote: StockQuote) -> dict:
         "scraped_at": quote.scraped_at.isoformat() if quote.scraped_at else None,
     }
 
+def _serialize_date(value):
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
 @app.get("/detailed-quotes")
 def get_all_quotes():
     with session_factory() as session:
@@ -501,26 +530,36 @@ def get_all_quotes():
         return {"All Quotes": [_serialize_stock_quote(q) for q in quotes]}
 
 
+@app.get("/detailed-quotes/{ticker}")
+def get_detailed_quote(ticker: str):
+    with session_factory() as session:
+        quote = session.query(StockQuote).filter(StockQuote.ticker == ticker.upper()).first()
+        if not quote:
+            raise HTTPException(status_code=404, detail=f"Quote for ticker '{ticker}' not found")
+        return _serialize_stock_quote(quote)
+
+
 @app.get("/dividends/upcoming")
 def get_dividends_from_db():
     with session_factory() as session:
+        announcement_date = cast(Announcement.date, Date)
         dividends = session.query(
             Announcement.ticker,
             Announcement.company,
-            Announcement.dividend,
-            Announcement.date,
+            Announcement.dividend_type,
+            announcement_date,
             Announcement.amount_kes,
             Announcement.event_type,
             Announcement.description,
         
-        ).filter(Announcement.date >= datetime.now().date()).all()
+        ).filter(announcement_date >= datetime.now().date()).all()
         return {
             "Dividends": [
                 {
                     "ticker": d[0],
                     "company": d[1],
-                    "dividend": d[2],
-                    "date": d[3].isoformat() if d[3] else None,
+                    "dividend_type": d[2],
+                    "date": _serialize_date(d[3]),
                     "amount_kes": d[4],
                     "event_type": d[5],
                     "description": d[6],
@@ -528,6 +567,186 @@ def get_dividends_from_db():
                 for d in dividends
             ]
         }
+
+# ─── DRIP ────────────────────────────────────────────────────────────────────
+
+def _load_market_data(session, ticker: str | None):
+    """
+    Return ``(QuoteData | None, list[DividendData])`` for ``ticker`` from the
+    scraped tables (one StockQuote row per ticker; every Announcement row for
+    it, newest first). Nothing is looked up when ``ticker`` is None.
+    """
+    if not ticker:
+        return None, []
+    quote_row = session.query(StockQuote).filter(StockQuote.ticker == ticker).first()
+    announcement_rows = (
+        session.query(Announcement)
+        .filter(Announcement.ticker == ticker)
+        .order_by(Announcement.date.desc())
+        .all()
+    )
+    quote = quote_from_row(quote_row) if quote_row else None
+    return quote, dividends_from_rows(announcement_rows)
+
+
+def _run_projection(resolved, shares_held: float, years: int, payments_per_year: int,
+                    assumptions: DripAssumptionsIn, price_growth_rate: float,
+                    dividend_growth_rate: float) -> DripSimulateResponse:
+    try:
+        projection = project_drip(
+            initial_shares=shares_held,
+            price=resolved.price,
+            dividend_per_share_annual=resolved.dividend_per_share_annual,
+            payments_per_year=payments_per_year,
+            years=years,
+            assumptions=assumptions.to_engine(),
+            price_growth_rate=price_growth_rate,
+            dividend_growth_rate=dividend_growth_rate,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    return projection_to_response(
+        resolved, projection, assumptions, shares_held, years, payments_per_year,
+        price_growth_rate, dividend_growth_rate,
+    )
+
+
+@app.post("/drip/simulate", response_model=DripSimulateResponse)
+def simulate_drip(request: DripSimulateRequest, current_user: User = Depends(get_current_user)):
+    """
+    Project what reinvesting dividends compounds into on the NSE.
+
+    Give a ``ticker`` and the latest scraped quote (previous close) and the
+    de-duplicated dividend announcements are used; pass ``price`` and/or
+    ``dividend_per_share`` (annual, gross, KES) to override or when no ticker
+    is given. The engine deducts withholding tax (5 % resident default),
+    charges brokerage plus levies on each purchase (2.12 % approx., KES 100
+    minimum), buys whole shares only and carries leftover cash forward.
+    """
+    with session_factory() as session:
+        quote, dividends = _load_market_data(session, request.ticker)
+
+    try:
+        resolved = resolve_market_inputs(
+            request.ticker, request.price, request.dividend_per_share, quote, dividends,
+        )
+    except InputResolutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    return _run_projection(
+        resolved, request.shares_held, request.years, request.payments_per_year,
+        request.assumptions, request.price_growth_rate, request.dividend_growth_rate,
+    )
+
+
+@app.get("/drip/portfolio", response_model=DripPortfolioResponse)
+def portfolio_drip(
+    years: int = Query(10, ge=1, le=MAX_YEARS),
+    payments_per_year: PaymentsPerYear = Query(1),
+    price_growth_rate: float = Query(0.0, gt=-1, le=1),
+    dividend_growth_rate: float = Query(0.0, gt=-1, le=1),
+    withholding_tax_rate: float = Query(RESIDENT_WHT_RATE, ge=0, lt=1),
+    brokerage_rate: float = Query(DEFAULT_BROKERAGE_RATE, ge=0, lt=1),
+    min_brokerage_kes: float = Query(DEFAULT_MIN_BROKERAGE_KES, ge=0),
+    include_periods: bool = Query(True, description="Set false to omit the per-period rows for each position."),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Run the DRIP projection over every holding in the current user's stored
+    portfolio (``user_portfolios`` / ``portfolio_holdings``), using scraped
+    prices and announcements. Holdings without a usable quote or dividend are
+    listed under ``skipped`` with the reason. 404 when the user has no
+    portfolio or it has no holdings.
+    """
+    assumptions = DripAssumptionsIn(
+        withholding_tax_rate=withholding_tax_rate,
+        brokerage_rate=brokerage_rate,
+        min_brokerage_kes=min_brokerage_kes,
+    )
+
+    with session_factory() as session:
+        portfolio = (
+            session.query(UserPortfolio)
+            .filter(UserPortfolio.user_id == current_user.id)
+            .order_by(UserPortfolio.id)
+            .first()
+        )
+        if not portfolio:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No portfolio found for this user. Add a portfolio with holdings first, "
+                       "or use POST /drip/simulate with explicit values.",
+            )
+
+        holdings = (
+            session.query(PortfolioHolding)
+            .filter(PortfolioHolding.portfolio_id == portfolio.id)
+            .order_by(PortfolioHolding.ticker)
+            .all()
+        )
+        if not holdings:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Portfolio '{portfolio.name}' has no holdings to project. "
+                       "Add holdings first, or use POST /drip/simulate.",
+            )
+
+        positions: list[DripPortfolioPositionOut] = []
+        skipped: list[SkippedPositionOut] = []
+        for holding in holdings:
+            ticker = (holding.ticker or "").upper()
+            shares = float(holding.shares_owned or 0)
+            if shares <= 0:
+                skipped.append(SkippedPositionOut(ticker=ticker, shares_held=shares, reason="shares_owned is zero"))
+                continue
+
+            quote, dividends = _load_market_data(session, ticker)
+            try:
+                resolved = resolve_market_inputs(ticker, None, None, quote, dividends)
+            except InputResolutionError as exc:
+                skipped.append(SkippedPositionOut(ticker=ticker, shares_held=shares, reason=exc.detail))
+                continue
+
+            result = _run_projection(
+                resolved, shares, years, payments_per_year, assumptions,
+                price_growth_rate, dividend_growth_rate,
+            )
+            positions.append(DripPortfolioPositionOut(
+                ticker=ticker,
+                name=resolved.name,
+                inputs=result.inputs,
+                totals=result.totals,
+                periods=result.periods if include_periods else [],
+            ))
+
+        portfolio_id = portfolio.id
+        portfolio_name = portfolio.name
+        cash_balance = float(portfolio.cash_balance or 0)
+
+    aggregate = DripPortfolioAggregateOut(
+        positions=len(positions),
+        initial_value=round(sum(p.inputs.shares_held * p.inputs.price for p in positions), 2),
+        ending_value=round(sum(p.totals.ending_value for p in positions), 2),
+        vs_no_reinvest_value=round(sum(p.totals.vs_no_reinvest_value for p in positions), 2),
+        reinvestment_gain=round(sum(p.totals.reinvestment_gain for p in positions), 2),
+        total_net_dividends=round(sum(p.totals.total_net_dividends for p in positions), 2),
+        total_tax_paid=round(sum(p.totals.total_tax_paid for p in positions), 2),
+        total_fees_paid=round(sum(p.totals.total_fees_paid for p in positions), 2),
+    )
+
+    return DripPortfolioResponse(
+        portfolio_id=portfolio_id,
+        portfolio_name=portfolio_name,
+        cash_balance=cash_balance,
+        years=years,
+        payments_per_year=payments_per_year,
+        assumptions=assumptions,
+        positions=positions,
+        skipped=skipped,
+        aggregate=aggregate,
+    )
+
 
 @app.get("/shutdown")
 async def shutdown():
